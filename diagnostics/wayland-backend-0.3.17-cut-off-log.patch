@@ -1,0 +1,60 @@
+diff -ru a/wayland-backend-0.3.17/src/rs/server_impl/client.rs wayland-backend-0.3.17/src/rs/server_impl/client.rs
+--- a/wayland-backend-0.3.17/src/rs/server_impl/client.rs	2006-07-23 19:21:28.000000000 -0600
++++ b/wayland-backend-0.3.17/src/rs/server_impl/client.rs	2026-11-02 17:01:46.197633200 -0700
+@@ -207,7 +207,8 @@
+ 
+         let msg = Message { sender_id: object_id.id.id, opcode, args: msg_args };
+ 
+-        if self.socket.write_message(&msg).is_err() {
++        if let Err(e) = self.socket.write_message(&msg) {
++            eprintln!("wayland · cut off a program: writing {}.{} to it failed: {e}", object.interface.name, message_desc.name);
+             self.kill(DisconnectReason::ConnectionClosed);
+         }
+ 
+@@ -362,6 +363,9 @@
+                     // need to read more data
+                     if let Err(e) = self.socket.fill_incoming_buffers() {
+                         if e.kind() != std::io::ErrorKind::WouldBlock {
++                            if e.kind() != std::io::ErrorKind::UnexpectedEof && e.raw_os_error() != Some(104) {
++                                eprintln!("wayland · cut off a program: reading from it failed: {e}");
++                            }
+                             self.kill(DisconnectReason::ConnectionClosed);
+                         }
+                         return Err(e);
+@@ -369,6 +373,21 @@
+                     continue;
+                 }
+                 Err(MessageParseError::Malformed) => {
++                    // pleamar-wm diagnostics: which message could not be read, and why.
++                    let data = self.socket.in_data_peek();
++                    if data.len() >= 8 {
++                        let id = u32::from_ne_bytes([data[0], data[1], data[2], data[3]]);
++                        let w2 = u32::from_ne_bytes([data[4], data[5], data[6], data[7]]);
++                        let found = map.find(id);
++                        eprintln!(
++                            "wayland · cut off a program: unreadable request on object {id} opcode {} size {} · object {}",
++                            w2 & 0xffff,
++                            w2 >> 16,
++                            match &found { Some(o) => format!("{}@{} has {} requests", o.interface.name, id, o.interface.requests.len()), None => "unknown to us".into() }
++                        );
++                    } else {
++                        eprintln!("wayland · cut off a program: unreadable request ({} bytes)", data.len());
++                    }
+                     self.kill(DisconnectReason::ConnectionClosed);
+                     return Err(rustix::io::Errno::PROTO.into());
+                 }
+diff -ru a/wayland-backend-0.3.17/src/rs/socket.rs wayland-backend-0.3.17/src/rs/socket.rs
+--- a/wayland-backend-0.3.17/src/rs/socket.rs	2006-07-23 19:21:28.000000000 -0600
++++ b/wayland-backend-0.3.17/src/rs/socket.rs	2026-11-02 17:01:46.198425381 -0700
+@@ -230,6 +230,11 @@
+         }
+     }
+ 
++    /// What has been read and not parsed yet (pleamar-wm diagnostics).
++    pub fn in_data_peek(&mut self) -> &[u8] {
++        self.in_data.get_contents()
++    }
++
+     /// Write a message to the outgoing buffer
+     ///
+     /// This method may flush the internal buffer if necessary (if it is full).
