@@ -477,12 +477,26 @@ impl Shell {
 #[derive(Default)]
 struct ClientState {
     compositor: CompositorClientState,
+    /// Its process, for the log when it is let go.
+    pid: i32,
 }
 
 impl ClientData for ClientState {
     fn initialized(&self, _: ClientId) {}
-    fn disconnected(&self, _: ClientId, _: DisconnectReason) {}
+    fn disconnected(&self, _: ClientId, reason: DisconnectReason) {
+        // A program that is let go while it is still running was cut off by us: say who, and why.
+        if self.pid > 0 && unsafe { libc::kill(self.pid, 0) } == 0 {
+            let name = std::fs::read_to_string(format!("/proc/{}/comm", self.pid)).unwrap_or_default();
+            eprintln!("windows · let go of {} (pid {}) while it still runs: {reason:?}", name.trim(), self.pid);
+        }
+    }
 }
+
+/// How much may wait for one program to read it. With the 4 KiB default, a program
+/// that stopped reading for a moment —its thread busy, the card stalled— while the
+/// pointer, frames and captures kept coming was cut off ("Connection reset by peer"):
+/// the Vitreus shell every minute or two, and terminals and browsers with it.
+const CLIENT_BUFFER: usize = 16 * 1024 * 1024;
 
 /// A computer-use agent's hands (`agent on`): see `agent.rs`.
 #[path = "agent.rs"]
@@ -704,6 +718,7 @@ fn run(max: usize, to_render: Sender<ToRender>, rx: Channel<ToNest>, ready: std:
     let mut event_loop: EventLoop<State> = EventLoop::try_new().map_err(|e| e.to_string())?;
     let display: Display<State> = Display::new().map_err(|e| e.to_string())?;
     let dh = display.handle();
+    dh.set_default_max_buffer_size(CLIENT_BUFFER);
 
     // A name of our own, not `wayland-1`: that one may be another compositor's,
     // and a program started by hand should not end up here by mistake.
@@ -716,8 +731,8 @@ fn run(max: usize, to_render: Sender<ToRender>, rx: Channel<ToNest>, ready: std:
     event_loop
         .handle()
         .insert_source(source, |stream, _, state: &mut State| {
-            remember_client(&stream);
-            if let Err(e) = state.dh.insert_client(stream, Arc::new(ClientState::default())) {
+            let pid = remember_client(&stream);
+            if let Err(e) = state.dh.insert_client(stream, Arc::new(ClientState { pid, ..ClientState::default() })) {
                 eprintln!("windows · a program could not connect: {e}");
             }
         })
@@ -3300,7 +3315,7 @@ static LAUNCHED: Mutex<Vec<i32>> = Mutex::new(Vec::new());
 /// unseen, holding its profile («Zen is already running»)—.
 static CLIENTS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
 
-fn remember_client(stream: &std::os::unix::net::UnixStream) {
+fn remember_client(stream: &std::os::unix::net::UnixStream) -> i32 {
     use std::os::fd::AsRawFd;
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -3314,6 +3329,7 @@ fn remember_client(stream: &std::os::unix::net::UnixStream) {
             all.push(cred.pid);
         }
     }
+    if ok { cred.pid } else { 0 }
 }
 
 /// The programs connected here, asked to close (SIGTERM: they save what they

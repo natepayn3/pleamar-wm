@@ -39,6 +39,9 @@ str0m = { version = "0.24", default-features = false, features = ["openssl"] }
 opusic-sys = { version = "0.7", default-features = false }
 # Only the protocol side: the painting is pleamar's own, so no backend and no
 # renderer of smithay's.
+# The per-program message limit (`set_default_max_buffer_size`, nest.rs) lives behind this feature;
+# with the Rust backend it links nothing new.
+wayland-server = { version = "0.31", features = ["libwayland_1_23"] }
 smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop", "xwayland", "backend_drm", "backend_gbm", "backend_libinput", "backend_session_libseat", "backend_udev"] }
 xkbcommon = "0.8"
 # The cursor theme the system has (Xcursor files), for the card's cursor plane.
